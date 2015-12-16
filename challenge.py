@@ -175,7 +175,18 @@ class SynChallenge:
 				else:
 					self.setindex(self.index + 1)
 			elif (curr == 20): # in
-				self.writebyte(self.readnext('raw'), ord(sys.stdin.read(1)))
+				text = ord(sys.stdin.read(1))
+				if text == 83: # S (save)
+					print 'Saving...'
+					text = ord(sys.stdin.read(1))
+				elif text == 82: # R (register)
+					self.setregister(7, int(sys.stdin.read(1)))
+					print 'Set register 8 to' , self.register[7]
+					text = ord(sys.stdin.read(1))
+				elif text == 80: # P (print)
+					print 'Register 8 is' , self.register[7]
+					text = ord(sys.stdin.read(1))
+				self.writebyte(self.readnext('raw'), text)
 			elif (curr == 21): # noop
 				pass
 			else:
