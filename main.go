@@ -3,18 +3,22 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math"
 	"os"
 	"strconv"
+
+	"github.com/pkg/term"
 )
 
 type syn struct {
+	debug    bool
 	file     []byte
-	position int64
-	register [8]int64
-	stack    []int64
+	Position int64 `json:"position"`
+	Register [8]int64
+	Stack    []int64
 }
 
 // turn little-endian pairs into a slice of ints
@@ -32,10 +36,28 @@ func (s *syn) read(n int, position int64) []int16 {
 	return data
 }
 
+func (s *syn) write(pos int64, data int64) error {
+	if pos < 0 {
+		s.Register[s.modulo(int16(pos))] = data
+		return nil
+	}
+	// write the little-endian pair to the raw bytes
+	out := new(bytes.Buffer)
+	err := binary.Write(out, binary.LittleEndian, data)
+	if err != nil {
+		panic(err)
+	}
+	raw := out.Bytes()
+	s.file[pos*2] = raw[0]
+	s.file[pos*2+1] = raw[1]
+
+	return nil
+}
+
 func (s *syn) parse(r int16) int64 {
 	if r < 0 {
 		i := s.modulo(r)
-		return s.register[i]
+		return s.Register[i]
 	}
 
 	return int64(r)
@@ -51,23 +73,36 @@ func (s *syn) modulo(r int16) int16 {
 }
 
 func (s *syn) push(val int64) error {
-	s.stack = append(s.stack, val)
+	s.Stack = append(s.Stack, val)
 	return nil
 }
 
 func (s *syn) pop() int64 {
-	l := len(s.stack) - 1
-	val := s.stack[l]
-	s.stack = s.stack[:l]
+	l := len(s.Stack) - 1
+	val := s.Stack[l]
+	s.Stack = s.Stack[:l]
 	return val
 }
 
-func (s *syn) debug(data []int16) {
+func (s *syn) getch() int64 {
+	t, _ := term.Open("/dev/tty")
+	term.RawMode(t)
+	bytes := make([]byte, 3)
+	_, err := t.Read(bytes)
+	t.Restore()
+	t.Close()
+	if err != nil {
+		panic(nil)
+	}
+	return int64(bytes[0])
+}
+
+func (s *syn) Printd(data []int16) {
 	fmt.Println("=====")
-	fmt.Printf("position: %+v\n", s.position)
+	fmt.Printf("position: %+v\n", s.Position)
 	fmt.Printf("data: %+v\n", data)
-	fmt.Printf("register: %+v\n", s.register)
-	fmt.Printf("stack: %+v\n", s.stack)
+	fmt.Printf("register: %+v\n", s.Register)
+	fmt.Printf("stack: %+v\n", s.Stack)
 }
 
 func main() {
@@ -79,14 +114,17 @@ func main() {
 	}
 
 	data := make([]int16, 4)
+	if len(os.Args) > 1 && os.Args[1] == "-d" {
+		vm.debug = true
+	}
 
 	for {
 		// commands will be at most <code> a b c, little endian
-		data = vm.read(4, vm.position)
+		data = vm.read(4, vm.Position)
 
 		// debug
-		if len(os.Args) > 1 && os.Args[1] == "-d" {
-			vm.debug(data)
+		if vm.debug {
+			vm.Printd(data)
 		}
 
 		cmd := vm.parse(data[0]) % 32768
@@ -94,131 +132,159 @@ func main() {
 			fmt.Println("exiting with input 0")
 			os.Exit(0)
 		} else if cmd == 1 { // set
-			vm.register[vm.modulo(data[1])] = vm.parse(data[2])
-			vm.position += 3
+			vm.Register[vm.modulo(data[1])] = vm.parse(data[2])
+			vm.Position += 3
 		} else if cmd == 2 { // push
 			a := vm.parse(data[1])
 			vm.push(a)
-			vm.position += 2
+			vm.Position += 2
 		} else if cmd == 3 { // pop
 			a := vm.modulo(data[1])
-			vm.register[a] = vm.pop()
-			vm.position += 2
+			vm.Register[a] = vm.pop()
+			vm.Position += 2
 		} else if cmd == 4 { // eq
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
 
 			if b == c {
-				vm.register[a] = 1
+				vm.Register[a] = 1
 			} else {
-				vm.register[a] = 0
+				vm.Register[a] = 0
 			}
-			vm.position += 4
+			vm.Position += 4
 		} else if cmd == 5 { // gt
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
 
 			if b > c {
-				vm.register[a] = 1
+				vm.Register[a] = 1
 			} else {
-				vm.register[a] = 0
+				vm.Register[a] = 0
 			}
-			vm.position += 4
+			vm.Position += 4
 		} else if cmd == 6 { // jmp
-			vm.position = vm.parse(data[1])
+			vm.Position = vm.parse(data[1])
 		} else if cmd == 7 { // jt
 			if vm.parse(data[1]) != 0 {
-				vm.position = vm.parse(data[2])
+				vm.Position = vm.parse(data[2])
 			} else {
-				vm.position += 3
+				vm.Position += 3
 			}
 		} else if cmd == 8 { // jf
 			if vm.parse(data[1]) == 0 {
-				vm.position = vm.parse(data[2])
+				vm.Position = vm.parse(data[2])
 			} else {
-				vm.position += 3
+				vm.Position += 3
 			}
 		} else if cmd == 9 { // add
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
-			vm.register[a] = (b + c) % 32768
-			vm.position += 4
+			vm.Register[a] = (b + c) % 32768
+			vm.Position += 4
 		} else if cmd == 10 { // mult
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
-			vm.register[a] = (b * c) % 32768
-			vm.position += 4
+			vm.Register[a] = (b * c) % 32768
+			vm.Position += 4
 		} else if cmd == 11 { // mod
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
-			vm.register[a] = b % c
-			vm.position += 4
+			vm.Register[a] = b % c
+			vm.Position += 4
 		} else if cmd == 12 { // and
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
 
-			vm.register[a] = b & c
-			vm.position += 4
+			vm.Register[a] = b & c
+			vm.Position += 4
 		} else if cmd == 13 { // or
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 			c := vm.parse(data[3])
 
-			vm.register[a] = b | c
-			vm.position += 4
+			vm.Register[a] = b | c
+			vm.Position += 4
 		} else if cmd == 14 { // not
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 
 			// is this a bug/hacky workaround?
-			vm.register[a] = (^b + 32768) % 32768
-			vm.position += 3
+			vm.Register[a] = (^b + 32768) % 32768
+			vm.Position += 3
 		} else if cmd == 15 { // rmem
 			a := vm.modulo(data[1])
 			b := vm.parse(data[2])
 
-			vm.register[a] = int64(vm.read(1, b)[0])
-			vm.position += 3
+			vm.Register[a] = int64(vm.read(1, b)[0])
+			vm.Position += 3
 		} else if cmd == 16 { // wmem
-			// still an issue here?
 			a := vm.parse(data[1])
 			b := vm.parse(data[2])
 
-			// write the little-endian pair to the raw bytes
-			out := new(bytes.Buffer)
-			err = binary.Write(out, binary.LittleEndian, b)
-			if err != nil {
-				panic(err)
-			}
-			raw := out.Bytes()
-			vm.file[a*2] = raw[0]
-			vm.file[a*2+1] = raw[1]
-
-			vm.position += 3
+			vm.write(a, b)
+			vm.Position += 3
 		} else if cmd == 17 { // call
 			a := vm.parse(data[1])
-			vm.push(vm.position + 2)
-			vm.position = a
+			vm.push(vm.Position + 2)
+			vm.Position = a
 		} else if cmd == 18 { // ret
-			if len(vm.stack) == 0 {
+			if len(vm.Stack) == 0 {
 				panic("stack is empty!")
 			}
-			vm.position = vm.pop()
+			vm.Position = vm.pop()
 		} else if cmd == 19 { // out
-			fmt.Print(string(data[1]))
+			fmt.Print(string(vm.parse(data[1])))
 			//fmt.Printf("%s (ascii %v)\n", string(data[1]), data[1])
-			vm.position += 2
-		} else if cmd == 20 { // TBD
-			a := vm.parse(data[1])
+			vm.Position += 2
+		} else if cmd == 20 { // in
+			a := int64(data[1])
+			char := vm.getch()
+			if char == 3 { // ^C
+				os.Exit(1)
+			} else if char == 4 { // ^D
+				vm.debug = !vm.debug
+				fmt.Printf("> debug mode %v\n", vm.debug)
+				char = vm.getch()
+			} else if char == 13 { // CR/NL equivalence
+				char = 10
+			} else if char == 19 { // ^S for save
+				err := ioutil.WriteFile("saved.bin", []byte(vm.file), 0644)
+				if err != nil {
+					panic(err)
+				}
+				props, err := json.Marshal(vm)
+				if err != nil {
+					panic(err)
+				}
+				err = ioutil.WriteFile("saved.json", props, 0644)
+				fmt.Println("> data saved")
+				char = vm.getch()
+			} else if char == 12 { // ^L for load
+				vm.file, err = ioutil.ReadFile("saved.bin")
+				raw, err := ioutil.ReadFile("saved.json")
+				if err != nil {
+					panic(err)
+				}
+				err = json.Unmarshal(raw, &vm)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println("> saved data loaded")
+				char = vm.getch()
+			}
 
+			fmt.Print(string(char))
+			//fmt.Println(char)
+			vm.write(a, char)
+			vm.Position += 2
 		} else if cmd == 21 { // noop
-			vm.position++
+			vm.Position++
 		} else {
 			fmt.Printf("I don't know how to handle %s\n", strconv.Itoa(int(cmd)))
 			os.Exit(1)
