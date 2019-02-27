@@ -11,9 +11,10 @@ import (
 	"strconv"
 
 	"github.com/pkg/term"
+	//"github.com/jroimartin/gocui"
 )
 
-type syn struct {
+type VM struct {
 	debug    bool
 	file     []byte
 	Position int64 `json:"position"`
@@ -21,103 +22,23 @@ type syn struct {
 	Stack    []int64
 }
 
-// turn little-endian pairs into a slice of ints
-func (s *syn) read(n int, position int64) []int16 {
-	pos := int(position) * 2
-	data := make([]int16, n)
-
-	for i := 0; i < n; i++ {
-		err := binary.Read(bytes.NewBuffer([]byte{s.file[pos+(i*2)], s.file[pos+(i*2+1)]}), binary.LittleEndian, &data[i])
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	return data
-}
-
-func (s *syn) write(pos int64, data int64) error {
-	if pos < 0 {
-		s.Register[s.modulo(int16(pos))] = data
-		return nil
-	}
-	// write the little-endian pair to the raw bytes
-	out := new(bytes.Buffer)
-	err := binary.Write(out, binary.LittleEndian, data)
-	if err != nil {
-		panic(err)
-	}
-	raw := out.Bytes()
-	s.file[pos*2] = raw[0]
-	s.file[pos*2+1] = raw[1]
-
-	return nil
-}
-
-func (s *syn) parse(r int16) int64 {
-	if r < 0 {
-		i := s.modulo(r)
-		return s.Register[i]
-	}
-
-	return int64(r)
-}
-
-func (s *syn) modulo(r int16) int16 {
-	var i int64
-	if r >= 0 {
-		panic(fmt.Sprintf("ERROR: %s is not a register\n", r))
-	}
-	i = 32768 - int64(math.Abs(float64(r)))
-	return int16(i)
-}
-
-func (s *syn) push(val int64) error {
-	s.Stack = append(s.Stack, val)
-	return nil
-}
-
-func (s *syn) pop() int64 {
-	l := len(s.Stack) - 1
-	val := s.Stack[l]
-	s.Stack = s.Stack[:l]
-	return val
-}
-
-func (s *syn) getch() int64 {
-	t, _ := term.Open("/dev/tty")
-	term.RawMode(t)
-	bytes := make([]byte, 3)
-	_, err := t.Read(bytes)
-	t.Restore()
-	t.Close()
-	if err != nil {
-		panic(nil)
-	}
-	return int64(bytes[0])
-}
-
-func (s *syn) Printd(data []int16) {
-	fmt.Println("=====")
-	fmt.Printf("position: %+v\n", s.Position)
-	fmt.Printf("data: %+v\n", data)
-	fmt.Printf("register: %+v\n", s.Register)
-	fmt.Printf("stack: %+v\n", s.Stack)
-}
-
-func main() {
-	var err error
-	vm := syn{}
-	vm.file, err = ioutil.ReadFile("challenge.bin")
+func New(filename string) *VM {
+	vm := VM{}
+	file, err := ioutil.ReadFile(filename)
 	if err != nil {
 		panic("You can't very well do the challenge if the damn file won't open!")
 	}
+	vm.file = file
 
-	data := make([]int16, 4)
 	if len(os.Args) > 1 && os.Args[1] == "-d" {
 		vm.debug = true
 	}
 
+	return &vm
+}
+
+func (vm *VM) Run() {
+	data := make([]int16, 4)
 	for {
 		// commands will be at most <code> a b c, little endian
 		data = vm.read(4, vm.Position)
@@ -266,17 +187,20 @@ func main() {
 				fmt.Println("> data saved")
 				char = vm.getch()
 			} else if char == 12 { // ^L for load
-				vm.file, err = ioutil.ReadFile("saved.bin")
-				raw, err := ioutil.ReadFile("saved.json")
-				if err != nil {
-					panic(err)
-				}
-				err = json.Unmarshal(raw, &vm)
-				if err != nil {
-					panic(err)
-				}
-				fmt.Println("> saved data loaded")
-				char = vm.getch()
+				fmt.Println("can't do that right now")
+				/*
+					vm.file, err = ioutil.ReadFile("saved.bin")
+					raw, err := ioutil.ReadFile("saved.json")
+					if err != nil {
+						panic(err)
+					}
+					err = json.Unmarshal(raw, &vm)
+					if err != nil {
+						panic(err)
+					}
+					fmt.Println("> saved data loaded")
+					char = vm.getch()
+				*/
 			}
 
 			fmt.Print(string(char))
@@ -290,4 +214,93 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// turn little-endian pairs into a slice of ints
+func (v *VM) read(n int, position int64) []int16 {
+	pos := int(position) * 2
+	data := make([]int16, n)
+
+	for i := 0; i < n; i++ {
+		err := binary.Read(bytes.NewBuffer([]byte{v.file[pos+(i*2)], v.file[pos+(i*2+1)]}), binary.LittleEndian, &data[i])
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return data
+}
+
+func (v *VM) write(pos int64, data int64) error {
+	if pos < 0 {
+		v.Register[v.modulo(int16(pos))] = data
+		return nil
+	}
+	// write the little-endian pair to the raw bytes
+	out := new(bytes.Buffer)
+	err := binary.Write(out, binary.LittleEndian, data)
+	if err != nil {
+		panic(err)
+	}
+	raw := out.Bytes()
+	v.file[pos*2] = raw[0]
+	v.file[pos*2+1] = raw[1]
+
+	return nil
+}
+
+func (v *VM) parse(r int16) int64 {
+	if r < 0 {
+		i := v.modulo(r)
+		return v.Register[i]
+	}
+
+	return int64(r)
+}
+
+func (v *VM) modulo(r int16) int16 {
+	var i int64
+	if r >= 0 {
+		panic(fmt.Sprintf("ERROR: %v is not a register\n", r))
+	}
+	i = 32768 - int64(math.Abs(float64(r)))
+	return int16(i)
+}
+
+func (v *VM) push(val int64) error {
+	v.Stack = append(v.Stack, val)
+	return nil
+}
+
+func (v *VM) pop() int64 {
+	l := len(v.Stack) - 1
+	val := v.Stack[l]
+	v.Stack = v.Stack[:l]
+	return val
+}
+
+func (v *VM) getch() int64 {
+	t, _ := term.Open("/dev/tty")
+	term.RawMode(t)
+	bytes := make([]byte, 3)
+	_, err := t.Read(bytes)
+	t.Restore()
+	t.Close()
+	if err != nil {
+		panic(nil)
+	}
+	return int64(bytes[0])
+}
+
+func (v *VM) Printd(data []int16) {
+	fmt.Println("=====")
+	fmt.Printf("position: %+v\n", v.Position)
+	fmt.Printf("data: %+v\n", data)
+	fmt.Printf("register: %+v\n", v.Register)
+	fmt.Printf("stack: %+v\n", v.Stack)
+}
+
+func main() {
+	vm := New("challenge.bin")
+	vm.Run()
 }
